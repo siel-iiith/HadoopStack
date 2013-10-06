@@ -1,14 +1,15 @@
-import hadoopstack
 import simplejson
+import sys
+from bson import objectid
+from time import sleep
     
+import hadoopstack
 from hadoopstack.dbOperations.db import get_node_objects
 from hadoopstack.dbOperations.db import flush_data_to_mongo
-
 from hadoopstack.services.configuration import configure_cluster
 from hadoopstack.services.configuration import configure_slave
 from hadoopstack.services import ec2
-
-from bson import objectid
+from hadoopstack.services.run import submit_job
 
 def spawn(data, cloud):
     """
@@ -50,8 +51,6 @@ def spawn(data, cloud):
     data['job']['nodes'] += get_node_objects(conn, "master", res_master.id)
     flush_data_to_mongo('job', data)
 
-    ec2.associate_public_ip(conn, res_master.instances[0].id)
-
     for slave in data['job']['slaves']:
         res_slave = ec2.boot_instances(
             conn,
@@ -66,7 +65,7 @@ def spawn(data, cloud):
 
     return
 
-def create(data, cloud):
+def create(data, cloud, general_config):
     """
     Creates the cluster - provisioning and configuration
 
@@ -76,12 +75,16 @@ def create(data, cloud):
     @param cloud: Cloud object containing information of a specific
     cloud provider.
     @type cloud: dict
+
+    @param general_config: General configuration parameters from hadoopstack.configure_slave
+    @type general_config: dict
     """
 
     # TODO: We need to create an request-check/validation filter before inserting
 
     spawn(data, cloud)
-    configure_cluster(data)
+    configure_cluster(data, cloud['user'], general_config)
+    submit_job(data, cloud['user'], cloud['auth'])
     
     return
 
@@ -102,61 +105,56 @@ def delete(cid, cloud):
 
     conn = ec2.make_connection(cloud['auth'])
 
-    keypair = 'hadoopstack-' + job_name
-    security_groups = ['hadoopstack-' + job_name + '-master', 
-        'hadoopstack-' + job_name + '-slave']
+    keypair, sec_grp_master, sec_grp_slave = ec2.ec2_entities(job_name)
+    security_groups = [sec_grp_master, sec_grp_slave]
+    public_ips = list()
 
-    '''
-    
-    Instances take a while to terminate, till then their status is
-    'shutting-down'. Complete termination is required for deletion  of
-    Security Groups. Hence, we use a loop to verify complete termination.
-
-    '''
-    
-    flag = True
-    public_ips = []
-
-    while flag:
-        flag = False
-        for res in conn.get_all_instances():
-            for instance in res.instances:
-                for node in job_info['nodes']:
-                    if instance.id == str(node['id']):
-                        try:
-                            if instance.ip_address != instance.private_ip_address:
-                                if instance.ip_address not in public_ips:
-                                    public_ips.append(str(instance.ip_address))
-                            instance.terminate()
-                        except:
-                            pass
-                        flag = True
-                        continue
-
+    for res in conn.get_all_instances():
+        for instance in res.instances:
+            for node in job_info['nodes']:
+                if instance.id == str(node['id']):
+                    instance.terminate()
     print "Terminated Instances"
 
-    try:
-        for kp in conn.get_all_key_pairs(keynames = [keypair]):
+    for kp in conn.get_all_key_pairs():
+        if kp.name == keypair:
             kp.delete()
+    print "Deleted keypairs"
 
-        print "Terminated keypairs"
+    while True:
+        try:
+            for sg in conn.get_all_security_groups(
+                                                groupnames = security_groups):
+                if len(sg.instances()) == 0:
+                    sg.delete()
+                    security_groups.remove(sg.name)
+                else:
+                    all_dead = True
+                    for instance in sg.instances():
+                        if instance.state != 'terminated':
+                            # To stop code from requesting blindly
+                            sleep(2)
+                            all_dead = False
 
-    except:
-        print "Error while deleting Keypair"
+                    if all_dead:
+                        sg.delete()
+                        security_groups.remove(sg.name)
+            if len(security_groups) == 0:
+                print "Deleted Security Groups"
+                break;
+        except:
+            print "Error:", sys.exc_info()[0]
+            break
 
-    try:
-        for sg in conn.get_all_security_groups(groupnames = security_groups):
-            print sg.delete() 
-        
-        print "Terminated Security Groups"
+    for node in job_info['nodes']:
+        public_ips.append(node['ip_address'])
 
-    except:
-        print "Error while deleting Security Groups"
+    if len(public_ips) > 0:
+        ec2.release_public_ips(conn, public_ips)
 
-    ec2.release_public_ips(conn, public_ips)
+    print "Released Elastic IPs"
 
     return True
-
 
 def list_clusters():
     clusters_dict = {"clusters": []}
@@ -164,7 +162,7 @@ def list_clusters():
         clusters_dict["clusters"].append(i['cluster'])
     return clusters_dict
 
-def add_nodes(data, cloud, job_id):
+def add_nodes(data, cloud, job_id, general_config):
     """
     Add nodes to a cluster and updates the job object
 
@@ -177,6 +175,9 @@ def add_nodes(data, cloud, job_id):
 
     @param job_id: Job ID
     @type job_id: string
+
+    @param general_config: General config parameters of hadoopstack
+    @type general_config: dict
     """
 
     conn = ec2.make_connection(cloud['auth'])
@@ -211,7 +212,10 @@ def add_nodes(data, cloud, job_id):
         flush_data_to_mongo('job', job_db_item)
 
     for new_node_obj in new_node_obj_list:
-        configure_slave(new_node_obj['private_ip_address'], key_location, job_name)
+        configure_slave(new_node_obj['ip_address'],
+                        key_location, job_name, cloud['user'],
+                        general_config['chef_server_hostname'],
+                        general_config['chef_server_ip'])
 
 def remove_nodes(data, cloud, job_id):
     """
