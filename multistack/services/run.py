@@ -1,4 +1,4 @@
-from hadoopstack.services.remote import Remote
+from multistack.services.remote import Remote
 
 HADOOP_GID='123'
 HDFS_UID='201'
@@ -51,12 +51,35 @@ def copy_to_hdfs(input_uri, remote):
     @param  input_uri: s3 address - s3://bucket/path/to/input/dir
     @type   input_uri: C{str}
     """
+
     bucket_name = input_uri.split('/')[2]
     input_path = input_uri.split('//')[1]
 
     remote.sudo("hadoop fs -mkdir tmp", user='mapred')
     remote.sudo("hadoop fs -copyFromLocal /media/{0}/ .".format(input_path),
         user='mapred')
+
+def copy_to_s3(output_uri, input_uri, remote):
+    """
+    Copy the output stored at base directory of output_uri
+
+    @param  output_uri: s3 address - s3://bucket/path/to/output/dir
+    @type   output_uri: C{str}
+
+    @param  input_uri: s3 address - s3://bucket/path/to/input/dir
+    @type   input_uri: C{str}
+    """
+
+    input_bucket = input_uri.split('/')[2]
+    output_bucket = output_uri.split('/')[2]
+    if input_bucket != output_bucket:
+        mount_bucket(output_bucket, remote)
+
+    output_dir = output_uri.split('/')[-1]
+    output_path = output_uri.split('//')[1]
+
+    remote.sudo("hadoop fs -copyToLocal {0}/* /media/{1}".format(output_dir, 
+            output_path), user = 'mapred')
 
 def download_jar(jar_location, remote):
     """
@@ -96,20 +119,24 @@ def submit_job(data, user, credentials):
     """
 
     job_name = data['job']['name']
-    key_location = "/tmp/hadoopstack-" + job_name + ".pem"
+    key_location = "/tmp/multistack-" + job_name + ".pem"
     
     for node in data['job']['nodes']:
         if node['role'] == 'master':
             remote = Remote(node['ip_address'], user, key_location)
 
-    bucket_name = data['job']['input'].split('/')[2]
-    setup_s3fs(credentials, remote)
-    mount_bucket(bucket_name, remote)
-    copy_to_hdfs(data['job']['input'], remote)
+    if data['job']['input'] != 's3://':
+        bucket_name = data['job']['input'].split('/')[2]
+        setup_s3fs(credentials, remote)
+        mount_bucket(bucket_name, remote)
+        copy_to_hdfs(data['job']['input'], remote)
+
     run_job(
-            data['job']['jar'],
-            data['job']['args'],
-            data['job']['input'],
-            data['job']['output'],
-            remote
-            )
+        data['job']['jar'],
+        data['job']['args'],
+        data['job']['input'],
+        data['job']['output'],
+        remote
+        )
+
+    copy_to_s3(data['job']['output'], data['job']['input'], remote)

@@ -4,9 +4,10 @@ import random
 from time import sleep
 
 import paramiko
+from flask import current_app
 
-from hadoopstack.services import ec2
-from hadoopstack.services.remote import Remote
+from multistack.services import ec2
+from multistack.services.remote import Remote
 
 def ssh_check(instance_ip, key_location):
     '''
@@ -15,7 +16,7 @@ def ssh_check(instance_ip, key_location):
 
     ssh = paramiko.SSHClient()
     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    
+
     while(True):
         try:
             ssh.connect(hostname=instance_ip,
@@ -24,11 +25,11 @@ def ssh_check(instance_ip, key_location):
         
         except socket.error, (value, message):
             if value == 113 or 111:
-                print "checking for ssh..."
+                current_app.logger.info("checking for ssh...")
                 sleep(1)
                 continue
             else:
-                print "socket.error: [Errno", value, "]", message
+                current_app.logger.error("socket.error: [Errno {0}] {1}".format(value, message))
 
         except paramiko.SSHException:
             print "paramiko.error: connection refused. Discarding instance"
@@ -68,10 +69,14 @@ def configure_master(ip_address, key_location, job_name, user,
 
     setup_chefserver_hostname(chef_server_hostname, chef_server_ip, remote)
 
-    subprocess.call(("knife bootstrap {0} -x {1} -i {2} \
-        -N {3}-master --sudo -r 'recipe[hadoopstack::master]' \
-        --no-host-key-verify".format(ip_address, user,
-         key_location, job_name)).split())
+    out = subprocess.Popen(("knife bootstrap {0} -x {1} -i {2} \
+            -N {3}-master --sudo -r 'recipe[multistack::master]' \
+            --no-host-key-verify".format(ip_address, user,
+            key_location, job_name)).split(),
+            stdout = subprocess.PIPE
+            )
+    for line in out.communicate()[0].split('\n'):
+        current_app.logger.info(line)
 
     return True
 
@@ -86,14 +91,17 @@ def configure_slave(ip_address, key_location, job_name, user,
 
     setup_chefserver_hostname(chef_server_hostname, chef_server_ip, remote)
 
-    subprocess.call((
+    out = subprocess.Popen((
         "knife bootstrap {0} -x {1} -i {2} \
-        -N {3}-slave-{4} --sudo -r 'recipe[hadoopstack::slave]' \
+        -N {3}-slave-{4} --sudo -r 'recipe[multistack::slave]' \
         --no-host-key-verify".format(ip_address,
             user, key_location, job_name,
             str(random.random()).split('.')[1])
-        ).split()
+        ).split(),
+        stdout = subprocess.PIPE
     )
+    for line in out.communicate()[0].split('\n'):
+        current_app.logger.info(line)
 
     return True
 
@@ -104,7 +112,7 @@ def configure_cluster(data, user, general_config):
     '''
 
     job_name = data['job']['name']
-    key_location = "/tmp/hadoopstack-" + job_name + ".pem"
+    key_location = "/tmp/multistack-" + job_name + ".pem"
  
     for node in data['job']['nodes']:
 

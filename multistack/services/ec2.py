@@ -2,6 +2,7 @@ from time import sleep
 
 from boto.ec2.connection import EC2Connection
 from boto.ec2.regioninfo import EC2RegionInfo
+from flask import current_app
 
 def make_connection(credentials):
     """
@@ -50,9 +51,9 @@ def ec2_entities(job_name):
     @type job_name: string
     """
 
-    keypair_name = "hadoopstack-" + job_name
-    sec_slave = "hadoopstack-" + job_name + "-slave"
-    sec_master = "hadoopstack-" + job_name + "-master"
+    keypair_name = "multistack-" + job_name
+    sec_slave = "multistack-" + job_name + "-slave"
+    sec_master = "multistack-" + job_name + "-master"
     return keypair_name, sec_master, sec_slave
 
 def associate_public_ip(conn, instance_id):
@@ -65,7 +66,7 @@ def associate_public_ip(conn, instance_id):
 
     addr = conn.allocate_address()
     addr.associate(instance_id)
-    print "IP Associated:", addr.public_ip
+    current_app.logger.info("IP Associated: {0}".format(addr.public_ip))
 
 def release_public_ips(conn, public_ips_list):
     """
@@ -113,7 +114,7 @@ def boot_instances(conn,
     for instance in reservation.instances:
         while instance.state == 'pending':
             sleep(4)
-            print "waiting for instance status to update"
+            current_app.logger.info("waiting for instance status to update")
             instance.update()
 
         associate_public_ip(conn, instance.id)

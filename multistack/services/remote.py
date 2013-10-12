@@ -1,6 +1,10 @@
 from fabric.api import env
 from fabric.api import run
 from fabric.api import sudo
+from flask import current_app
+
+from multistack.log import LogStream
+from multistack.constants import *
 
 class Remote:
     """
@@ -24,6 +28,8 @@ class Remote:
         self.address = address
         self.user = user
         self.key = key_location
+        self.logstream = LogStream()
+        self.logstream.add_logger(current_app.logger)
 
     def run(self, command):
         """
@@ -35,9 +41,11 @@ class Remote:
         env.host_string = self.address
         env.key_filename = self.key
         env.user = self.user
-        env.disable_known_hosts=True
+        env.disable_known_hosts = True
+        env.connection_attempts = SSH_ATTEMPTS
+        env.timeout = SSH_TIMEOUT
 
-        return  run(command)
+        return  run(command, stdout = self.logstream, stderr = self.logstream)
 
     def sudo(self, command, user=None, pty=False):
         """
@@ -52,6 +60,8 @@ class Remote:
         env.host_string = self.address
         env.key_filename = self.key
         env.user = self.user
-        env.disable_known_hosts=True
+        env.disable_known_hosts = True
+        env.connection_attempts = SSH_ATTEMPTS
+        env.timeout = SSH_TIMEOUT
 
-        return sudo(command, user=user, pty=False)
+        return sudo(command, user=user, pty=False, stdout = self.logstream, stderr = self.logstream)
